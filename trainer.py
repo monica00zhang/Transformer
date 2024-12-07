@@ -78,7 +78,7 @@ class Seq2SeqTrainer:
 
     def save_model(self, epoch, train_loss, train_metric, val_loss, val_metric):
         """save checkpoint model"""
-        checkpoint_path = join(self.checkpoint_dir, f"epoch_{epoch:03d}_val_loss_{val_loss:.4f}.pth")
+        checkpoint_path = join(self.checkpoint_dir, f"epoch_{epoch:03d}_val_loss_{val_loss:.4f}.pth".replace('.', '_'))
 
         save_state = {'epoch':epoch,
                       'train_loss': train_loss,
@@ -91,6 +91,20 @@ class Seq2SeqTrainer:
             torch.save(self.model.state_dict(), checkpoint_path)
             self.history.append(save_state)
 
-        self.best_val_metric = min(self.best_val_metric, val_metric) if self.best_val_metric else val_metric
+        representative_val_metric = val_metric[0]
+        if self.best_val_metric is None or self.best_val_metric > representative_val_metric:
+            self.best_val_metric = representative_val_metric
+            self.best_val_loss = val_loss
+            self.best_train_loss = train_loss
+            self.best_train_metrics = train_metric
+            self.val_metrics_at_best = val_metric
+            self.best_checkpoint_filepath = checkpoint_path
+
+        # self.best_val_metric = min(self.best_val_metric, val_metric) if self.best_val_metric else val_metric
         if self.logger:
             self.logger.info(f"Saved model at {checkpoint_path}")
+
+    def _elapsed_time(self):
+        now = datetime.now()
+        elapsed = now - self.start_time
+        return str(elapsed).split('.')[0]  # remove milliseconds
