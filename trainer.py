@@ -6,6 +6,23 @@ from os import makedirs
 from datetime import datetime
 import json
 
+
+def make_src_mask(src, en_vocab):
+    # 生成源序列的掩码，屏蔽填充位置
+    src_mask = (src != en_vocab['<pad>']).unsqueeze(1).unsqueeze(2)
+    return src_mask  # [batch_size, 1, 1, src_len]
+
+
+def make_trg_mask(trg, zh_vocab):
+    # 生成目标序列的掩码，包含填充位置和未来信息
+    trg_pad_mask = (trg != zh_vocab['<pad>']).unsqueeze(1).unsqueeze(2)  # [batch_size, 1, 1, trg_len]
+    trg_len = trg.size(1)
+    trg_sub_mask = torch.tril(torch.ones((trg_len, trg_len), device=trg.device)).bool()  # [trg_len, trg_len]
+    trg_mask = trg_pad_mask & trg_sub_mask  # [batch_size, 1, trg_len, trg_len]
+    return trg_mask
+
+
+
 class Seq2SeqTrainer:
     def __init__(self, model,
                  train_loader, val_loader,
@@ -37,9 +54,12 @@ class Seq2SeqTrainer:
         self.model.train() if mode == 'train' else self.model.eval()
         epoch_losses, epoch_metrics = [], []
 
-        for sources, inputs, targets in tqdm(loader):
-            sources, inputs, targets = map(lambda x: x.to(self.device), (sources, inputs, targets))
-            outputs = self.model(sources, inputs)
+        for inputs, targets in tqdm(loader):
+            inputs, targets = map(lambda x: x.to(self.device), (inputs, targets))
+            outputs = self.model(inputs, targets[:, :-1])
+            output_dim = outputs.shape[-1]
+            outputs = outputs.contiguous().view(-1, output_dim)
+            targets = targets[:, 1:].contiguous().view(-1)  # 目标不包括第一个词
             batch_loss, batch_count = self.loss_fn(outputs, targets)
 
             if mode == 'train':

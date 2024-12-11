@@ -4,6 +4,19 @@ import logging
 
 BASE_DIR = dirname(dirname(abspath(__file__)))
 
+import sentencepiece as spm
+
+
+def chinese_tokenizer_load():
+    sp_chn = spm.SentencePieceProcessor()
+    sp_chn.Load('{}.model'.format("./tokenizer/chn"))
+    return sp_chn
+
+
+def english_tokenizer_load():
+    sp_eng = spm.SentencePieceProcessor()
+    sp_eng.Load('{}.model'.format("./tokenizer/eng"))
+    return sp_eng
 
 def get_logger(run_name, save_log=None):
     log_dir = join(BASE_DIR, 'logs')

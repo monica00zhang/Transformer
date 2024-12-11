@@ -9,7 +9,7 @@ import logging
 from tqdm import tqdm
 
 
-def build_transformer(src_vocab_size: int, tgt_vocab_size: int,
+def build_transformer(device, src_vocab_size: int, tgt_vocab_size: int,
                       src_seq_len: int, tgt_seq_len: int,
                       d_model: int =512,
                       N: int =6,
@@ -17,46 +17,46 @@ def build_transformer(src_vocab_size: int, tgt_vocab_size: int,
                       dropout: float =0.1,
                       d_ff: int =2048):
     # Create the embedding layers
-    src_embed = InputEmbeddings(d_model, src_vocab_size)
-    tgt_embed = InputEmbeddings(d_model, tgt_vocab_size)
+    src_embed = InputEmbeddings(d_model, src_vocab_size).to(device)
+    tgt_embed = InputEmbeddings(d_model, tgt_vocab_size).to(device)
 
     # Create the positional encoding layers
-    src_pos = PositionalEncoding(d_model, src_seq_len, dropout)
-    tgt_pos = PositionalEncoding(d_model, tgt_seq_len, dropout)
+    src_pos = PositionalEncoding(d_model, src_seq_len, dropout).to(device)
+    tgt_pos = PositionalEncoding(d_model, tgt_seq_len, dropout).to(device)
 
     # Create the encoder blocks
     encoder_blocks = []
     for _ in range(N):
-        encoder_self_attention_block = MultiHeadAttentionBlock(d_model, h, dropout)
-        feed_forward_block = FeedForwardBlock(d_model, d_ff, dropout)
+        encoder_self_attention_block = MultiHeadAttentionBlock(d_model, h, dropout).to(device)
+        feed_forward_block = FeedForwardBlock(d_model, d_ff, dropout).to(device)
         encoder_block = EncoderBlock(d_model, encoder_self_attention_block, feed_forward_block, dropout)
         encoder_blocks.append(encoder_block)
 
     # Create the decoder blocks
     decoder_blocks = []
     for _ in range(N):
-        decoder_self_attention_block = MultiHeadAttentionBlock(d_model, h, dropout)
-        decoder_cross_attention_block = MultiHeadAttentionBlock(d_model, h, dropout)
-        feed_forward_block = FeedForwardBlock(d_model, d_ff, dropout)
+        decoder_self_attention_block = MultiHeadAttentionBlock(d_model, h, dropout).to(device)
+        decoder_cross_attention_block = MultiHeadAttentionBlock(d_model, h, dropout).to(device)
+        feed_forward_block = FeedForwardBlock(d_model, d_ff, dropout).to(device)
         decoder_block = DecoderBlock(d_model, decoder_self_attention_block, decoder_cross_attention_block, feed_forward_block, dropout)
         decoder_blocks.append(decoder_block)
 
     # Create the encoder and decoder
-    encoder = Encoder(d_model, nn.ModuleList(encoder_blocks))
-    decoder = Decoder(d_model, nn.ModuleList(decoder_blocks))
+    encoder = Encoder(d_model, nn.ModuleList(encoder_blocks)).to(device)
+    decoder = Decoder(d_model, nn.ModuleList(decoder_blocks)).to(device)
 
     # Create the projection layer
-    projection_layer = ProjectionLayer(d_model, tgt_vocab_size)
+    projection_layer = ProjectionLayer(d_model, tgt_vocab_size).to(device)
 
     # Create the transformer
-    transformer = Transformer(encoder, decoder, src_embed, tgt_embed, src_pos, tgt_pos, projection_layer)
+    transformer = Transformer(encoder, decoder, src_embed, tgt_embed, src_pos, tgt_pos, projection_layer).to(device)
 
     # Initialize the parameters
     for p in transformer.parameters():
         if p.dim() > 1:
             nn.init.xavier_uniform_(p) # Initialize the parameters
 
-    return transformer
+    return transformer.to(device)
 
 
 
@@ -95,6 +95,8 @@ class Encoder(nn.Module):
         for layer in self.layers:
             x = layer(x, mask)
         return self.norm(x)
+
+
 
 
 
@@ -162,4 +164,22 @@ class Transformer(nn.Module):
     def project(self, x):
         # (batch, seq_len, vocab_size)
         return self.projection_layer(x)
+
+
+    def forward(self, src, tgt, src_mask, tgt_mask):
+        """
+        定义前向传播逻辑
+        :param src: 源语言输入
+        :param tgt: 目标语言输入
+        :param src_mask: 源语言掩码
+        :param tgt_mask: 目标语言掩码
+        :return: 预测输出 (batch, seq_len, vocab_size)
+        """
+        # 编码器输出
+        encoder_output = self.encode(src, src_mask)
+        # 解码器输出
+        decoder_output = self.decode(encoder_output, src_mask, tgt, tgt_mask)
+        # 投影到词汇表大小
+        output = self.project(decoder_output)
+        return output
 
