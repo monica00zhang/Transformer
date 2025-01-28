@@ -3,6 +3,7 @@ from torch.autograd import Variable
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, DataLoader
+import torch.nn.functional as F
 import numpy as np
 from data_process import text_process
 from sklearn.model_selection import train_test_split
@@ -17,16 +18,11 @@ from transformers import AutoTokenizer
 # from config import get_config, get_weights_file_path, latest_weights_file_path
 
 
-"""
-1、 data process
-  a. split text data  
-  b. text convert to sequence
-  c. data split -> train & valid
-"""
-
+"""  1. Initialize parameter """
 # 初始化模型参数
 d_model = 512
 num_heads = 8
+N = 6
 d_ff = 2048
 dropout = 0.1
 batch_size = 32
@@ -45,6 +41,8 @@ config = {
     "checkpoint_dir": "./checkpoints",  # 模型保存路径
 }
 
+
+"""  2. Create dairy  """
 random.seed(0)
 np.random.seed(0)
 torch.manual_seed(0)
@@ -56,22 +54,26 @@ run_name = run_name_format.format(task_name=task_name,timestamp=datetime.now().s
 # logger = get_logger(run_name, save_log=save_log_path)
 logger = get_logger(run_name)
 
-# a. process data
+""" 3. Data Process:
+    1) load data      """
 file_path = '/content/drive/My Drive/transformer/data/cmn.txt'  # 请确保数据文件位于该路径下
 save_path = '/content/drive/My Drive/transformer/data'
 text_process(file_path, save_path)
-
-# b. 从文件中加载句子
-# 定义英文和中文的分词器
-tokenizer_en = AutoTokenizer.from_pretrained("bert-base-uncased")  # 使用英文BERT预训练模型
-tokenizer_zh = AutoTokenizer.from_pretrained("bert-base-chinese")  # 使用中文BERT预训练模型
-
-# 从文件中加载句子
 with open('/content/drive/My Drive/transformer/data/english_sentences.txt', 'r', encoding='utf-8') as f:
     english_sentences = [line.strip() for line in f]
 
 with open('/content/drive/My Drive/transformer/data/chinese_sentences.txt', 'r', encoding='utf-8') as f:
     chinese_sentences = [line.strip() for line in f]
+
+""" 4. Tokenizer:
+    1) load data      """
+
+# 定义英文和中文的分词器
+tokenizer_en = AutoTokenizer.from_pretrained("bert-base-uncased")  # 使用英文BERT预训练模型
+tokenizer_zh = AutoTokenizer.from_pretrained("bert-base-chinese")  # 使用中文BERT预训练模型
+# 为分词器添加特殊标记
+tokenizer_en.add_special_tokens({"pad_token": "<pad>", "bos_token": "<bos>", "eos_token": "<eos>"})
+tokenizer_zh.add_special_tokens({"pad_token": "<pad>", "bos_token": "<bos>", "eos_token": "<eos>"})
 
 # 构建英文和中文的词汇表
 # 使用tokenizer的 vocabulary 来构建词汇表
@@ -84,18 +86,14 @@ print(f'中文词汇表大小：{len(zh_vocab)}')
 # 定义将句子转换为索引序列的函数
 def process_sentence(sentence, tokenizer):
     """
-    将句子转换为索引序列，并添加 <bos> 和 <eos>
-    :param sentence: 输入句子
-    :param tokenizer: 分词器函数
-    :return: 索引序列
+    将句子转换为索引序列，并添加 起始<bos> 和 结束<eos>
     """
-    tokens = tokenizer.encode(sentence, add_special_tokens=True)  # 添加 [CLS] 和 [SEP] 标记
+    tokens = tokenizer.encode(sentence, add_special_tokens=False)  # 分词并转为索引
+    tokens = [tokenizer.bos_token_id] + tokens + [tokenizer.eos_token_id]  # 添加 <bos> 和 <eos> 的索引
     return tokens
 
-# 将所有句子转换为索引序列
 en_sequences = [process_sentence(sentence, tokenizer_en) for sentence in english_sentences]
 zh_sequences = [process_sentence(sentence, tokenizer_zh) for sentence in chinese_sentences]
-
 # 查看示例句子的索引序列
 print("示例英文句子索引序列：", en_sequences[0])
 print("示例中文句子索引序列：", zh_sequences[0])
@@ -142,8 +140,8 @@ tgt_vocab_size = len(zh_vocab)
 model = build_transformer(config['device'],
                           src_vocab_size, tgt_vocab_size,
                            seq_len,  seq_len,
-                          d_model, 6, num_heads,dropout,d_ff)
-
+                          d_model, N, num_heads,
+                          dropout,d_ff)
 
 
 """ 3. loss & optimizer """
@@ -153,7 +151,7 @@ class LabelSmoothing(nn.Module):
 
     def __init__(self, size, padding_idx, smoothing=0.0):
         super(LabelSmoothing, self).__init__()
-        self.criterion = nn.KLDivLoss(size_average=False)
+        self.criterion = nn.KLDivLoss(reduction='sum')
         self.padding_idx = padding_idx
         self.confidence = 1.0 - smoothing
         self.smoothing = smoothing
@@ -161,27 +159,31 @@ class LabelSmoothing(nn.Module):
         self.true_dist = None
 
     def forward(self, x, target):
-        assert x.size(1) == self.size
+        x = F.log_softmax(x, dim=-1)
+        assert x.size(2) == self.size  # vocab size
         true_dist = x.data.clone()
         true_dist.fill_(self.smoothing / (self.size - 2))
-        true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
-        true_dist[:, self.padding_idx] = 0
+        true_dist.scatter_(2, target.data.unsqueeze(2), self.confidence) # zhuyi
+        true_dist[:, :, self.padding_idx] = 0
         mask = torch.nonzero(target.data == self.padding_idx)
+
         if mask.dim() > 0:
-            true_dist.index_fill_(0, mask.squeeze(), 0.0)
+            true_dist.index_fill_(0, mask[:, 0], 0.0)
         self.true_dist = true_dist
         return self.criterion(x, Variable(true_dist, requires_grad=False))
 
 
-loss_fn = LabelSmoothing(size=tgt_vocab_size, padding_idx=0, smoothing=0.1)
+loss_fn = LabelSmoothing(size=tgt_vocab_size, padding_idx=tokenizer_zh.pad_token_id, smoothing=0.1)
 optimizer = optim.Adam(model.parameters(), lr=lr)
 
-metric_fn =  AccuracyMetric()
+metric_fn =  AccuracyMetric(pad_index=tokenizer_zh.pad_token_id)
 
 
 logger.info('Start training...')
 trainer = Seq2SeqTrainer(
     model=model,
+    src_vocab=en_vocab,
+    tgt_vocab=zh_vocab,
     train_loader=train_dataloader,
     val_loader=val_dataloader,
     loss_fn=loss_fn,

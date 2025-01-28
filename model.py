@@ -98,8 +98,6 @@ class Encoder(nn.Module):
 
 
 
-
-
 class DecoderBlock(nn.Module):
 
     def __init__(self, features: int, self_attention_block,

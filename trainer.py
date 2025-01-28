@@ -14,7 +14,19 @@ def make_src_mask(src, en_vocab):
 
 
 def make_trg_mask(trg, zh_vocab):
-    # 生成目标序列的掩码，包含填充位置和未来信息
+    # 生成目标序列的掩码，包含填充位置和未来信息def make_src_mask(src, en_vocab):
+    #     # 生成源序列的掩码，屏蔽填充位置
+    #     src_mask = (src != en_vocab['<pad>']).unsqueeze(1).unsqueeze(2)
+    #     return src_mask  # [batch_size, 1, 1, src_len]
+    #
+    #
+    # def make_trg_mask(trg, zh_vocab):
+    #     # 生成目标序列的掩码，包含填充位置和未来信息
+    #     trg_pad_mask = (trg != zh_vocab['<pad>']).unsqueeze(1).unsqueeze(2)  # [batch_size, 1, 1, trg_len]
+    #     trg_len = trg.size(1)
+    #     trg_sub_mask = torch.tril(torch.ones((trg_len, trg_len), device=trg.device)).bool()  # [trg_len, trg_len]
+    #     trg_mask = trg_pad_mask & trg_sub_mask  # [batch_size, 1, trg_len, trg_len]
+    #     return trg_mask
     trg_pad_mask = (trg != zh_vocab['<pad>']).unsqueeze(1).unsqueeze(2)  # [batch_size, 1, 1, trg_len]
     trg_len = trg.size(1)
     trg_sub_mask = torch.tril(torch.ones((trg_len, trg_len), device=trg.device)).bool()  # [trg_len, trg_len]
@@ -24,11 +36,13 @@ def make_trg_mask(trg, zh_vocab):
 
 
 class Seq2SeqTrainer:
-    def __init__(self, model,
+    def __init__(self, model, src_vocab, tgt_vocab,
                  train_loader, val_loader,
                  loss_fn, metric_fn, optimizer, config, logger=None):
         self.device = torch.device(config['device'])
         self.model = model.to(self.device)
+        self.src_vocab = src_vocab
+        self.tgt_vocab = tgt_vocab
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.loss_fn = loss_fn.to(self.device)
@@ -56,15 +70,22 @@ class Seq2SeqTrainer:
 
         for inputs, targets in tqdm(loader):
             inputs, targets = map(lambda x: x.to(self.device), (inputs, targets))
-            outputs = self.model(inputs, targets[:, :-1])
-            output_dim = outputs.shape[-1]
-            outputs = outputs.contiguous().view(-1, output_dim)
-            targets = targets[:, 1:].contiguous().view(-1)  # 目标不包括第一个词
-            batch_loss, batch_count = self.loss_fn(outputs, targets)
+            src_mask = make_src_mask(inputs, self.src_vocab)
+            tgt_mask = make_trg_mask(targets[:, :-1], self.tgt_vocab)
+
+            outputs = self.model(inputs, targets[:, :-1], src_mask, tgt_mask)
+            # output_dim = outputs.shape[-1]
+            # outputs = outputs.contiguous().view(-1, output_dim) # use for cross-entropy
+
+            targets = targets[:, 1:]
+            # targets = targets[:, 1:].contiguous().view(-1)  # 目标不包括第一个词 # use for cross-entropy
+            batch_loss = self.loss_fn(outputs, targets)
+            print(f"Loss: {batch_loss.item()}")
 
             if mode == 'train':
                 self.optimizer.zero_grad()
                 batch_loss.backward()
+                """ 梯度裁剪 """
                 if self.clip_grads:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1) # 对梯度进行裁剪，确保范数不超过1，使得梯度稳定，模型训练收敛速度快
                 self.optimizer.step()
@@ -110,8 +131,8 @@ class Seq2SeqTrainer:
         if self.epoch > 0:
             torch.save(self.model.state_dict(), checkpoint_path)
             self.history.append(save_state)
+        representative_val_metric = val_metric
 
-        representative_val_metric = val_metric[0]
         if self.best_val_metric is None or self.best_val_metric > representative_val_metric:
             self.best_val_metric = representative_val_metric
             self.best_val_loss = val_loss
